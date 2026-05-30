@@ -1,0 +1,4 @@
+# 西安水务服务定义
+update_data:
+  name: 更新数据
+  description: 手动更新西安水务数据

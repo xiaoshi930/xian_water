@@ -1,0 +1,35 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "西安水务",
+        "description": "设置西安水务集成",
+        "data": {
+          "client_code": "客户编号",
+          "client_type": "客户类型",
+          "cid": "CID"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "连接失败",
+      "invalid_auth": "认证无效",
+      "unknown": "未知错误"
+    },
+    "abort": {
+      "already_configured": "设备已配置"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "西安水务选项",
+        "data": {
+          "client_code": "客户编号",
+          "client_type": "客户类型",
+          "cid": "CID"
+        }
+      }
+    }
+  }
+}
