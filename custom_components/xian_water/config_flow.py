@@ -13,9 +13,7 @@ from .const import (
     CONF_CLIENT_CODE,
     CONF_CLIENT_TYPE,
     CONF_CID,
-    DEFAULT_CLIENT_CODE,
     DEFAULT_CLIENT_TYPE,
-    DEFAULT_CID,
 )
 from .http_client import XianWaterClient
 
@@ -59,9 +57,9 @@ class XianWaterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_CLIENT_CODE, default=DEFAULT_CLIENT_CODE): str,
+                    vol.Required(CONF_CLIENT_CODE): str,
                     vol.Required(CONF_CLIENT_TYPE, default=DEFAULT_CLIENT_TYPE): str,
-                    vol.Required(CONF_CID, default=DEFAULT_CID): str,
+                    vol.Required(CONF_CID): str,
                 }
             ),
             errors=errors,
