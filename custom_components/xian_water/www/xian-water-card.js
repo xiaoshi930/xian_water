@@ -1,5 +1,5 @@
 console.info("%c 消逝卡-水费卡 \n%c        v 1.1 ", "color: red; font-weight: bold; background: black", "color: white; font-weight: bold; background: black");
-import { LitElement, html, css } from "https://unpkg.com/lit-element@2.4.0/lit-element.js?module";
+import { LitElement, html, css } from "lit";
 
 window.customCards = window.customCards || [];
 window.customCards.push(
