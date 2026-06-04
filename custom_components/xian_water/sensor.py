@@ -358,8 +358,8 @@ class XianWaterSensor(SensorEntity):
         ladder_info = self._get_ladder_info()
         billing_attrs.update(ladder_info)
 
-        billing_attrs["年阶梯第2档起始用水量"] = TIER_LEVEL_1
-        billing_attrs["年阶梯第3档起始用水量"] = TIER_LEVEL_2
+        billing_attrs["年阶梯第2档起始水量"] = TIER_LEVEL_1
+        billing_attrs["年阶梯第3档起始水量"] = TIER_LEVEL_2
         billing_attrs["年阶梯第1档水价"] = TIER_PRICE_1
         billing_attrs["年阶梯第2档水价"] = TIER_PRICE_2
         billing_attrs["年阶梯第3档水价"] = TIER_PRICE_3
