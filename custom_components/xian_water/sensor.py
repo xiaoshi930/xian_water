@@ -14,6 +14,7 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfVolume
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -38,6 +39,19 @@ DEFAULT_DAILY_VOLUME = 0.38
 VARIATION_RANGE = 0.15
 
 
+def build_device_info(client_code: str) -> DeviceInfo:
+    """构造两个实体共用的设备信息。
+
+    两个实体必须使用**同一组 identifiers**，否则 HA 会为每个实体各建一个设备。
+    """
+    return DeviceInfo(
+        identifiers={(DOMAIN, client_code)},
+        name=f"西安水费 {client_code}",
+        manufacturer="西安水务",
+        model="水表",
+    )
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -50,7 +64,6 @@ async def async_setup_entry(
     await coordinator.async_load_storage()
     await coordinator.async_config_entry_first_refresh()
 
-    client_code = config.get("client_code", "")
     entities = [
         XianWaterSensor(coordinator, config),
         XianWaterTotalWaterSensor(coordinator, config),
@@ -311,6 +324,7 @@ class XianWaterSensor(SensorEntity):
         self._attr_icon = "mdi:water"
         self._attr_native_unit_of_measurement = "元"
         self._client_code = client_code
+        self._attr_device_info = build_device_info(client_code)
 
     @property
     def available(self):
@@ -459,6 +473,7 @@ class XianWaterTotalWaterSensor(SensorEntity):
         self._attr_unique_id = f"xian_water_{client_code}_total_water"
         self._attr_name = f"西安水费 {client_code} 累计用水"
         self._attr_icon = "mdi:water"
+        self._attr_device_info = build_device_info(client_code)
         if client_code:
             self.entity_id = f"sensor.xian_water_{client_code}_total_water"
 
