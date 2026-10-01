@@ -102,7 +102,8 @@ class XianWaterOptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_init(self, user_input=None):
         """Manage the options."""
         if user_input is not None:
-            # DateSelector 返回的是 date 对象，配置项统一存成字符串
+            # DateSelector 只校验、原样返回入参：从 YAML/代码路径传入的 date/datetime
+            # 对象会被原样写进 options，所以要在这里统一规范化成字符串
             raw_date = user_input.get(CONF_CALIBRATION_DATE)
             if isinstance(raw_date, datetime):
                 user_input[CONF_CALIBRATION_DATE] = raw_date.strftime("%Y-%m-%d")
