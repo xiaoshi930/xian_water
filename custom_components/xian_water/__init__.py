@@ -8,7 +8,11 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
 
-from .const import DOMAIN
+from .const import (
+    CONF_CALIBRATION_AMOUNT,
+    CONF_CALIBRATION_DATE,
+    DOMAIN,
+)
 
 PLATFORMS = [Platform.SENSOR]
 
@@ -40,5 +44,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle options update."""
     new_data = {**entry.data, **entry.options}
+
+    # 校准项允许被清空：选项里缺失或为空时，必须真正从 data 中移除，
+    # 否则合并时会一直沿用上一次的旧校准值。
+    for key in (CONF_CALIBRATION_DATE, CONF_CALIBRATION_AMOUNT):
+        if new_data.get(key) in (None, ""):
+            new_data.pop(key, None)
+
     hass.config_entries.async_update_entry(entry, data=new_data)
     await hass.config_entries.async_reload(entry.entry_id)

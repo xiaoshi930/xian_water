@@ -24,10 +24,13 @@
     "step": {
       "init": {
         "title": "西安水务选项",
+        "description": "校准用于修正估算值：填写某个日期的**实际余额**（水务 App / 水表查询到的值），集成会自动倒推出「自上次充值以来」的真实日均消费，并据此重新推算每天的估算金额、剩余天数、日均消费与累计用水。留空表示不校准。",
         "data": {
           "client_code": "客户编号",
           "client_type": "客户类型",
-          "cid": "CID"
+          "cid": "CID",
+          "calibration_date": "校准日期",
+          "calibration_amount": "校准金额（该日实际余额，元）"
         }
       }
     }

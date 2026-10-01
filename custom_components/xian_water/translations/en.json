@@ -24,10 +24,13 @@
     "step": {
       "init": {
         "title": "Xi'an Water Options",
+        "description": "Calibration corrects the estimates: enter the **actual balance** on a given date (from the water utility app / meter). The integration back-calculates the real daily consumption since the last recharge and re-derives the daily estimated cost, remaining days, daily average and cumulative usage. Leave empty to disable calibration.",
         "data": {
           "client_code": "Client Code",
           "client_type": "Client Type",
-          "cid": "CID"
+          "cid": "CID",
+          "calibration_date": "Calibration date",
+          "calibration_amount": "Calibration amount (actual balance on that date, CNY)"
         }
       }
     }

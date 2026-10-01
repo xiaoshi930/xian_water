@@ -156,7 +156,7 @@ class XianWaterStorage:
     def get_statistics_cursor(self, key: str) -> dict[str, Any]:
         """读取指定统计的导入游标。
 
-        返回 {last_imported_day, last_imported_total}，无记录时返回空字典。
+        返回 {last_imported_day, last_imported_total, signature}，无记录时返回空字典。
         纯内存读取，不需要 executor。
         """
         stats = self._data.get("statistics")
@@ -165,17 +165,44 @@ class XianWaterStorage:
         cursor = stats.get(key)
         return dict(cursor) if isinstance(cursor, dict) else {}
 
-    def set_statistics_cursor(self, key: str, last_day, last_total: float) -> None:
+    def set_statistics_cursor(
+        self,
+        key: str,
+        last_day,
+        last_total: float,
+        signature: str | None = None,
+    ) -> None:
         """写入统计游标并落盘（同步，需通过 executor 调用）。
 
         只写入 "statistics" 键，不触碰任何业务字段。
+        signature 为校准指纹，变化时统计模块会触发全量重导。
         """
         stats = self._data.get("statistics")
         if not isinstance(stats, dict):
             stats = {}
             self._data["statistics"] = stats
-        stats[key] = {
-            "last_imported_day": last_day,
-            "last_imported_total": round(float(last_total or 0.0), 4),
-        }
+        entry = stats.get(key)
+        if not isinstance(entry, dict):
+            entry = {}
+        entry["last_imported_day"] = last_day
+        entry["last_imported_total"] = round(float(last_total or 0.0), 4)
+        if signature is not None:
+            entry["signature"] = signature
+        stats[key] = entry
+        self._save_sync()
+
+    def set_statistics_signature(self, key: str, signature: str) -> None:
+        """只更新校准指纹，保留导入游标。
+
+        用于全量重导失败时记录指纹，避免每次刷新都重复尝试同一份无效导入。
+        """
+        stats = self._data.get("statistics")
+        if not isinstance(stats, dict):
+            stats = {}
+            self._data["statistics"] = stats
+        entry = stats.get(key)
+        if not isinstance(entry, dict):
+            entry = {}
+        entry["signature"] = signature
+        stats[key] = entry
         self._save_sync()

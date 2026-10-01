@@ -6,6 +6,7 @@ from homeassistant import config_entries
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import selector
 
 from .const import (
     DOMAIN,
@@ -13,11 +14,28 @@ from .const import (
     CONF_CLIENT_CODE,
     CONF_CLIENT_TYPE,
     CONF_CID,
+    CONF_CALIBRATION_DATE,
+    CONF_CALIBRATION_AMOUNT,
     DEFAULT_CLIENT_TYPE,
 )
 from .http_client import XianWaterClient
 
 _LOGGER = logging.getLogger(__name__)
+
+# 校准日期/金额允许清空：空字符串或 None 都会被视图层清掉
+_CAL_DATE_VALIDATOR = vol.Any(selector.DateSelector(), vol.In(["", None]))
+_CAL_AMOUNT_VALIDATOR = vol.Any(
+    selector.NumberSelector(
+        selector.NumberSelectorConfig(
+            min=0,
+            max=1000000,
+            step=0.01,
+            mode=selector.NumberSelectorMode.BOX,
+            unit_of_measurement="元",
+        )
+    ),
+    vol.In(["", None]),
+)
 
 class XianWaterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for 西安水务."""
@@ -82,7 +100,15 @@ class XianWaterOptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_init(self, user_input=None):
         """Manage the options."""
         if user_input is not None:
+            # DateSelector 返回的是 date 对象，配置项统一存成字符串
+            raw_date = user_input.get(CONF_CALIBRATION_DATE)
+            if isinstance(raw_date, datetime):
+                user_input[CONF_CALIBRATION_DATE] = raw_date.strftime("%Y-%m-%d")
+            elif isinstance(raw_date, date):
+                user_input[CONF_CALIBRATION_DATE] = raw_date.isoformat()
             return self.async_create_entry(title="", data=user_input)
+
+        current = {**self._config_entry.data, **self._config_entry.options}
 
         return self.async_show_form(
             step_id="init",
@@ -100,6 +126,18 @@ class XianWaterOptionsFlowHandler(config_entries.OptionsFlow):
                         CONF_CID,
                         default=self._config_entry.data.get(CONF_CID),
                     ): str,
+                    vol.Optional(
+                        CONF_CALIBRATION_DATE,
+                        description={
+                            "suggested_value": current.get(CONF_CALIBRATION_DATE) or None
+                        },
+                    ): _CAL_DATE_VALIDATOR,
+                    vol.Optional(
+                        CONF_CALIBRATION_AMOUNT,
+                        description={
+                            "suggested_value": current.get(CONF_CALIBRATION_AMOUNT)
+                        },
+                    ): _CAL_AMOUNT_VALIDATOR,
                 }
             ),
         )

@@ -49,10 +49,14 @@ async def async_import_water_statistics(
     hass: HomeAssistant,
     storage: "XianWaterStorage",
     client_code: str,
+    signature: str = "none",
 ) -> None:
     """把历史日用水量回填至 HA 长期统计。
 
     1. 读取游标，得到上次导入到哪一天（last_imported_day）与累计值（last_imported_total）。
+       若传入的 signature 与游标中记录的不一致（说明校准点变了、历史日水量已被重算），
+       则丢弃游标、从头全量重导——HA 对相同 (statistic_id, start) 的行是覆盖更新，
+       因此重导不会产生重复数据。
     2. 从 storage 的 dayList 中选出晚于游标、且距今至少 _STABILITY_DAYS 天的记录。
     3. 生成 StatisticData 序列（每天一条，sum = 累计到当天末的总用水量）。
     4. 调用 async_add_external_statistics（调度到 recorder 线程执行）。
@@ -61,6 +65,14 @@ async def async_import_water_statistics(
     cursor = storage.get_statistics_cursor(_STAT_KEY_TOTAL_WATER)
     last_imported_day: str | None = cursor.get("last_imported_day") or None
     running_total = float(cursor.get("last_imported_total", 0.0) or 0.0)
+
+    signature_changed = cursor.get("signature") != signature
+    if signature_changed:
+        _LOGGER.info(
+            "校准指纹由 %s 变为 %s，将全量重导用水统计", cursor.get("signature"), signature
+        )
+        last_imported_day = None
+        running_total = 0.0
 
     cutoff = (date.today() - timedelta(days=_STABILITY_DAYS)).isoformat()
 
@@ -133,6 +145,11 @@ async def async_import_water_statistics(
             exc,
             stat_id,
         )
+        if signature_changed:
+            # 记住新指纹，避免每次刷新都重复尝试同一份无效的全量导入
+            await hass.async_add_executor_job(
+                storage.set_statistics_signature, _STAT_KEY_TOTAL_WATER, signature
+            )
         return
 
     await hass.async_add_executor_job(
@@ -140,6 +157,7 @@ async def async_import_water_statistics(
         _STAT_KEY_TOTAL_WATER,
         new_last_day,
         new_last_total,
+        signature,
     )
     _LOGGER.info(
         "已导入 %d 条日用水量到 HA 统计 (最新日=%s, 累计=%.2f m³)",

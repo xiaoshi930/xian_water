@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import math
 import random
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -21,6 +21,8 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .const import (
     DOMAIN,
     CONF_CLIENT_CODE,
+    CONF_CALIBRATION_DATE,
+    CONF_CALIBRATION_AMOUNT,
     TIER_LEVEL_1,
     TIER_LEVEL_2,
     TIER_PRICE_1,
@@ -92,6 +94,8 @@ class XianWaterCoordinator(DataUpdateCoordinator):
         client_code = config.get("client_code", "default")
         self._storage = XianWaterStorage(hass, client_code)
         self.data = None
+        # 由 balance / 日均消费 / 剩余天数 / 校准信息组成的摘要，供实体读取
+        self.summary: dict[str, Any] = {}
 
     async def async_load_storage(self) -> None:
         """Load persistent storage data asynchronously."""
@@ -120,20 +124,55 @@ class XianWaterCoordinator(DataUpdateCoordinator):
                     day_list.append(day_data)
                     current_date += timedelta(days=1)
 
-            # 计算余额 = 最近一笔充值金额 - 日均消费 × 距今天数
+            # 先把历史记录还原成「未校准的基准估算」，再按校准点重算。
+            # 这样校准点的切换 / 清空都是可重现、可回退的，不会残留上一次的校准值。
+            self._ensure_raw(day_list)
+            self._restore_raw(day_list)
+
+            # 最近一笔充值与其距今天数
             records_sorted = sorted(RECHARGE_RECORDS, key=lambda x: x["date"], reverse=True)
             latest_recharge = float(records_sorted[0]["cost"])
-            latest_recharge_date = datetime.strptime(records_sorted[0]["date"], "%Y-%m-%d")
+            latest_recharge_date = datetime.strptime(
+                records_sorted[0]["date"], "%Y-%m-%d"
+            ).replace(hour=0, minute=0, second=0, microsecond=0)
             days_since_latest = (today - latest_recharge_date).days
-            # 日均消费：用除最近一笔外的充值总额 / 首尾充值日期间隔
-            other_recharge_total = sum(float(r["cost"]) for r in records_sorted[1:])
-            first_recharge_date = datetime.strptime(records_sorted[-1]["date"], "%Y-%m-%d")
-            recharge_span = abs((latest_recharge_date - first_recharge_date).days)
-            if recharge_span > 0:
-                avg_daily_cost = other_recharge_total / recharge_span
-            else:
-                avg_daily_cost = DEFAULT_DAILY_VOLUME * TIER_PRICE_1
-            balance = round(latest_recharge - avg_daily_cost * days_since_latest, 2)
+
+            # 优先按校准点重算；未配置校准时沿用原有估算逻辑
+            summary = self._apply_calibration(
+                day_list, latest_recharge, latest_recharge_date, today
+            )
+            if summary is None:
+                # 日均消费：用除最近一笔外的充值总额 / 首尾充值日期间隔
+                other_recharge_total = sum(float(r["cost"]) for r in records_sorted[1:])
+                first_recharge_date = datetime.strptime(records_sorted[-1]["date"], "%Y-%m-%d")
+                recharge_span = abs((latest_recharge_date - first_recharge_date).days)
+                if recharge_span > 0:
+                    avg_daily_cost = other_recharge_total / recharge_span
+                else:
+                    avg_daily_cost = DEFAULT_DAILY_VOLUME * TIER_PRICE_1
+                balance = round(latest_recharge - avg_daily_cost * days_since_latest, 2)
+
+                # 日均消费展示值仍取最近 7 天实际估算的均值
+                recent = sorted(day_list, key=lambda x: x["day"], reverse=True)[:7]
+                recent_costs = [float(d.get("dayEleCost", 0) or 0) for d in recent]
+                display_daily = (
+                    sum(recent_costs) / len(recent_costs) if recent_costs else avg_daily_cost
+                )
+
+                summary = {
+                    "balance": balance,
+                    "avg_daily_cost": round(display_daily, 2),
+                    "remaining_days": (
+                        max(0, math.ceil(balance / display_daily)) if display_daily > 0 else None
+                    ),
+                    "calibrated": False,
+                    "reference_date": latest_recharge_date.strftime("%Y-%m-%d"),
+                    "reference_amount": round(latest_recharge, 2),
+                    "days_since_recharge": days_since_latest,
+                    "calibration": None,
+                }
+
+            balance = summary["balance"]
 
             # 处理月数据和年数据
             month_list = self._process_month_data(day_list)
@@ -152,6 +191,7 @@ class XianWaterCoordinator(DataUpdateCoordinator):
             # 持久化存储
             merged = await self.hass.async_add_executor_job(self._storage.update, processed)
             self.data = merged
+            self.summary = summary
             self.last_update_time = datetime.now()
 
             # 回填 HA 长期统计，供能源面板「水消耗」显示历史曲线
@@ -160,6 +200,7 @@ class XianWaterCoordinator(DataUpdateCoordinator):
                     self.hass,
                     self._storage,
                     self.config.get("client_code", "default"),
+                    self._calibration_signature(summary),
                 )
             except Exception as ex:  # pylint: disable=broad-except
                 _LOGGER.warning("导入用水长期统计失败: %s", ex)
@@ -169,6 +210,217 @@ class XianWaterCoordinator(DataUpdateCoordinator):
         except Exception as ex:
             _LOGGER.error("更新水费数据失败: %s", ex)
             raise UpdateFailed(f"Error updating water data: {ex}")
+
+    # ------------------------------------------------------------------
+    # 校准
+    # ------------------------------------------------------------------
+
+    def _get_calibration(self) -> tuple[str, datetime, float] | None:
+        """读取并校验校准配置。
+
+        返回 (校准日期字符串, 校准日期, 校准当天实际余额)，配置缺失或非法时返回 None。
+        """
+        raw_date = self.config.get(CONF_CALIBRATION_DATE)
+        raw_amount = self.config.get(CONF_CALIBRATION_AMOUNT)
+
+        if raw_date in (None, "") or raw_amount in (None, ""):
+            return None
+
+        if isinstance(raw_date, datetime):
+            date_str = raw_date.strftime("%Y-%m-%d")
+        elif isinstance(raw_date, date):
+            date_str = raw_date.isoformat()
+        else:
+            date_str = str(raw_date).strip().replace("/", "-").replace(".", "-")
+
+        try:
+            calib_date = datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            _LOGGER.warning("校准日期格式无效（应为 YYYY-MM-DD），已忽略校准: %s", raw_date)
+            return None
+
+        try:
+            calib_balance = float(raw_amount)
+        except (TypeError, ValueError):
+            _LOGGER.warning("校准金额无效，已忽略校准: %s", raw_amount)
+            return None
+
+        if calib_balance < 0:
+            _LOGGER.warning("校准金额不能为负，已忽略校准: %s", raw_amount)
+            return None
+
+        return date_str, calib_date, calib_balance
+
+    @staticmethod
+    def _calibration_signature(summary: dict[str, Any]) -> str:
+        """校准指纹：变化时触发长期统计的全量重导。"""
+        info = summary.get("calibration") or {}
+        if not summary.get("calibrated"):
+            return "none"
+        return f"{info.get('date')}|{info.get('balance')}"
+
+    def _apply_calibration(
+        self,
+        day_list: list,
+        latest_recharge: float,
+        latest_recharge_date: datetime,
+        today: datetime,
+    ) -> dict[str, Any] | None:
+        """用「校准日期 + 当天实际余额」重算自上次充值以来的全部估算值。
+
+        校准点给出的是区间的**真实终点**，于是：
+        - 区间真实消耗 = 上次充值金额 − 校准余额
+        - 校准日均消费 = 区间真实消耗 ÷ (校准日 − 充值日)
+        - 每日估算金额 / 水量：区间内按比例缩放到真实消耗，校准日之后按校准日均续推
+        - 余额 = 校准余额 − 校准日均 × (今天 − 校准日)
+        - 剩余天数 = 余额 ÷ 校准日均
+
+        返回 None 表示未配置校准或校准无效，调用方应回退到默认估算。
+        """
+        calibration = self._get_calibration()
+        if calibration is None:
+            return None
+
+        date_str, calib_date, calib_balance = calibration
+
+        if calib_date <= latest_recharge_date:
+            _LOGGER.warning(
+                "校准日期 %s 不晚于最近充值日期 %s，本次校准被忽略",
+                date_str,
+                latest_recharge_date.strftime("%Y-%m-%d"),
+            )
+            return None
+        if calib_date > today:
+            _LOGGER.warning("校准日期 %s 晚于今天，本次校准被忽略", date_str)
+            return None
+
+        used = latest_recharge - calib_balance
+        if used <= 0:
+            _LOGGER.warning(
+                "校准余额 %.2f 不小于最近充值金额 %.2f（%s），区间消耗非正，本次校准被忽略",
+                calib_balance,
+                latest_recharge,
+                latest_recharge_date.strftime("%Y-%m-%d"),
+            )
+            return None
+
+        span_days = (calib_date - latest_recharge_date).days
+        daily_cost = round(used / span_days, 4) if span_days > 0 else 0.0
+
+        # 1) 上次充值日 → 校准日：整体缩放到真实消耗
+        self._rescale_days(day_list, latest_recharge_date, calib_date, used)
+
+        # 2) 校准日 → 今天：按校准后的日均继续估算
+        tail_days = (today - calib_date).days
+        if tail_days > 0:
+            self._rescale_days(day_list, calib_date, today, daily_cost * tail_days)
+
+        balance = round(calib_balance - daily_cost * tail_days, 2)
+        remaining_days = max(0, math.ceil(balance / daily_cost)) if daily_cost > 0 else None
+
+        _LOGGER.info(
+            "已应用水费校准: 校准日=%s 校准余额=%.2f 参考充值=%s(%.2f) "
+            "区间消耗=%.2f 区间天数=%d 校准日均=%.4f 当前余额=%.2f 剩余天数=%s",
+            date_str,
+            calib_balance,
+            latest_recharge_date.strftime("%Y-%m-%d"),
+            latest_recharge,
+            used,
+            span_days,
+            daily_cost,
+            balance,
+            remaining_days,
+        )
+
+        return {
+            "balance": balance,
+            "avg_daily_cost": round(daily_cost, 2),
+            "remaining_days": remaining_days,
+            "calibrated": True,
+            "reference_date": latest_recharge_date.strftime("%Y-%m-%d"),
+            "reference_amount": round(latest_recharge, 2),
+            "days_since_recharge": (today - latest_recharge_date).days,
+            "calibration": {
+                "date": date_str,
+                "balance": round(calib_balance, 2),
+                "used": round(used, 2),
+                "span_days": span_days,
+                "avg_daily_cost": round(daily_cost, 2),
+                "tail_days": tail_days,
+            },
+        }
+
+    @staticmethod
+    def _ensure_raw(day_list: list) -> None:
+        """为老记录补齐「未校准基准值」（Raw 字段）。
+
+        历史版本生成的日记录没有 Raw 字段，首次升级时以当前值作为基准。
+        """
+        for day in day_list:
+            if "dayEleNumRaw" not in day:
+                day["dayEleNumRaw"] = float(day.get("dayEleNum", 0) or 0)
+            if "dayEleCostRaw" not in day:
+                day["dayEleCostRaw"] = float(day.get("dayEleCost", 0) or 0)
+
+    @staticmethod
+    def _restore_raw(day_list: list) -> None:
+        """把日数据还原为未校准的基准估算值。"""
+        for day in day_list:
+            day["dayEleNum"] = round(float(day.get("dayEleNumRaw", 0) or 0), 2)
+            day["dayEleCost"] = round(float(day.get("dayEleCostRaw", 0) or 0), 2)
+
+    @staticmethod
+    def _rescale_days(
+        day_list: list,
+        start_date: datetime,
+        end_date: datetime,
+        target_cost: float,
+    ) -> None:
+        """把 (start_date, end_date] 区间的日估算金额 / 水量缩放到 target_cost。
+
+        以 Raw 基准值按比例缩放，可保留原有「每天略有波动」的形态；
+        采用累计取整的方式逐日摊分，避免长区间上四舍五入误差堆积到某一天。
+        """
+        start_str = start_date.strftime("%Y-%m-%d")
+        end_str = end_date.strftime("%Y-%m-%d")
+        window = [d for d in day_list if start_str < str(d.get("day", "")) <= end_str]
+        if not window:
+            return
+
+        target = max(0.0, float(target_cost))
+        current = sum(float(d.get("dayEleCostRaw", 0) or 0) for d in window)
+
+        if current <= 0:
+            # 基准估算为 0，无法按比例缩放，退化为按天均分
+            each_cost = target / len(window)
+            each_volume = each_cost / TIER_PRICE_1
+            for day in window:
+                day["dayEleCost"] = round(each_cost, 2)
+                day["dayEleNum"] = round(each_volume, 2)
+            return
+
+        factor = target / current
+        cum_raw_cost = 0.0
+        cum_raw_volume = 0.0
+        cum_cost = 0.0
+        cum_volume = 0.0
+
+        for day in window:
+            cum_raw_cost += float(day.get("dayEleCostRaw", 0) or 0)
+            cum_raw_volume += float(day.get("dayEleNumRaw", 0) or 0)
+
+            cost = round(round(cum_raw_cost * factor, 2) - cum_cost, 2)
+            volume = round(round(cum_raw_volume * factor, 2) - cum_volume, 2)
+
+            if cost < 0:
+                cost = 0.0
+            if volume <= 0 and cost > 0:
+                volume = 0.01
+
+            day["dayEleCost"] = cost
+            day["dayEleNum"] = volume
+            cum_cost = round(cum_cost + cost, 2)
+            cum_volume = round(cum_volume + volume, 2)
 
     def _generate_all_data(self) -> list:
         """从最早充值日期到今天，生成全部伪造的每日用水数据."""
@@ -210,10 +462,14 @@ class XianWaterCoordinator(DataUpdateCoordinator):
         # 根据年阶梯计算费用
         daily_cost = self._calculate_tier_cost(daily_volume, prev_annual, current_annual)
 
+        # dayEleNum / dayEleCost 为最终对外值（可能被校准改写）；
+        # dayEleNumRaw / dayEleCostRaw 为未校准的基准估算，校准按它按比例缩放。
         return {
             "day": date_str,
             "dayEleNum": daily_volume,
             "dayEleCost": round(daily_cost, 2),
+            "dayEleNumRaw": daily_volume,
+            "dayEleCostRaw": round(daily_cost, 2),
         }
 
     def _calculate_tier_cost(self, daily_volume, prev_annual, current_annual):
@@ -342,32 +598,36 @@ class XianWaterSensor(SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return the state attributes."""
         attrs = {}
+        summary = self.coordinator.summary or {}
 
         if self.coordinator.data:
-            day_list = self.coordinator.data.get("dayList", [])
-            if day_list:
-                sorted_days = sorted(day_list, key=lambda x: x["day"], reverse=True)
-                recent_days = sorted_days[:7]
+            # 日均消费 / 剩余天数由 coordinator 统一计算（已校准时使用校准日均）
+            if summary:
+                attrs["日均消费"] = summary.get("avg_daily_cost", 0)
+                attrs["剩余天数"] = summary.get("remaining_days")
+                attrs["预付费"] = "否"
+                attrs["上次充值日期"] = summary.get("reference_date")
+                attrs["上次充值金额"] = summary.get("reference_amount")
+                attrs["距上次充值天数"] = summary.get("days_since_recharge")
 
-                if recent_days:
-                    daily_costs = [day.get("dayEleCost", 0) for day in recent_days]
-                    avg_daily_cost = sum(daily_costs) / len(daily_costs)
-
-                    balance = self.coordinator.data.get("balance", 0)
-                    if avg_daily_cost > 0:
-                        estimated_days = balance / avg_daily_cost
-                        try:
-                            latest_day = sorted_days[0]["day"]
-                            latest_date = datetime.strptime(latest_day, "%Y-%m-%d")
-                            today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-                            days_since_latest = (today - latest_date).days
-                            remaining_days = max(0, estimated_days - days_since_latest)
-
-                            attrs["日均消费"] = round(avg_daily_cost, 2)
-                            attrs["剩余天数"] = math.ceil(remaining_days)
-                            attrs["预付费"] = "否"
-                        except (ValueError, IndexError) as e:
-                            _LOGGER.error("计算剩余天数时出错: %s", e)
+                calibration = summary.get("calibration") or {}
+                if summary.get("calibrated"):
+                    attrs["校准信息"] = {
+                        "已校准": True,
+                        "校准日期": calibration.get("date"),
+                        "校准余额": calibration.get("balance"),
+                        "区间累计消耗": calibration.get("used"),
+                        "区间天数": calibration.get("span_days"),
+                        "校准日均消费": calibration.get("avg_daily_cost"),
+                        "校准后推算天数": calibration.get("tail_days"),
+                    }
+                else:
+                    attrs["校准信息"] = {
+                        "已校准": False,
+                        "校准日期": None,
+                        "校准余额": None,
+                        "说明": "未配置校准，日均消费与余额均为估算值",
+                    }
 
             # 按日期倒序输出列表
             sorted_daylist = sorted(

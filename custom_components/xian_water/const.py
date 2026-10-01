@@ -7,6 +7,10 @@ CONF_CLIENT_CODE = "client_code"
 CONF_CLIENT_TYPE = "client_type"
 CONF_CID = "cid"
 
+# 校准配置：校准日期 + 该日期的实际余额，用于修正自上次充值以来的估算值
+CONF_CALIBRATION_DATE = "calibration_date"
+CONF_CALIBRATION_AMOUNT = "calibration_amount"
+
 DEFAULT_CLIENT_TYPE = "IC"
 
 API_ENDPOINT = "http://dzfp.xazls.com:54432/invoice/ew/queryPayRecords"
