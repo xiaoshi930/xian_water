@@ -10,6 +10,7 @@ from typing import Any
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
+    SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfVolume
@@ -42,9 +43,9 @@ VARIATION_RANGE = 0.15
 
 
 def build_device_info(client_code: str) -> DeviceInfo:
-    """构造两个实体共用的设备信息。
+    """构造同户号下多个实体共用的设备信息。
 
-    两个实体必须使用**同一组 identifiers**，否则 HA 会为每个实体各建一个设备。
+    同一户号的实体必须使用**同一组 identifiers**，否则 HA 会为每个实体各建一个设备。
     """
     return DeviceInfo(
         identifiers={(DOMAIN, client_code)},
@@ -69,6 +70,7 @@ async def async_setup_entry(
     entities = [
         XianWaterSensor(coordinator, config),
         XianWaterTotalWaterSensor(coordinator, config),
+        XianWaterTotalCostSensor(coordinator, config),
     ]
 
     hass.data.setdefault(DOMAIN, {}).setdefault(entry.entry_id, {})
@@ -702,6 +704,93 @@ class XianWaterSensor(SensorEntity):
         except Exception as ex:
             _LOGGER.error("获取阶梯信息失败: %s", ex)
             return {}
+
+    async def async_added_to_hass(self):
+        """When entity is added to hass."""
+        await super().async_added_to_hass()
+        self.async_on_remove(self.coordinator.async_add_listener(self.async_write_ha_state))
+
+
+class XianWaterTotalCostSensor(SensorEntity):
+    """累计水费传感器，供 HA 能源面板的成本跟踪使用。
+
+    取值 = 全部日费用（dayEleCost）之和。
+
+    属性选择说明：
+    - `device_class = MONETARY` + `state_class = TOTAL`：HA 的
+      `DEVICE_CLASS_STATE_CLASSES[MONETARY]` 只允许 `total`。Recorder 会为它生成
+      长期统计，于是它可以直接出现在「能源」面板 → 水 → 成本跟踪的
+      「使用跟踪总成本的实体」（stat_cost）下拉里。
+    - 必须是 `total` 而不是 `total_increasing`：水费做过校准（`_rescale_days`
+      会重算历史日费用），累计值允许下降；`total_increasing` 遇到下降会被
+      recorder 当成换表重置，把整个数值记成一笔新消费。
+    - 这条统计是**实体统计**（statistic_id 就是 `sensor.xxx`），与累计用水的外部
+      统计（`xian_water:total_water_xxx`）互不相干，不会重复计量。
+    """
+
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = "元"
+    _attr_suggested_display_precision = 2
+
+    def __init__(self, coordinator: XianWaterCoordinator, config: dict):
+        """Initialize the sensor."""
+        self.coordinator = coordinator
+        self.config = config
+        client_code = config.get("client_code", "")
+        self._client_code = client_code
+        self._attr_unique_id = f"xian_water_{client_code}_total_cost"
+        self._attr_name = f"西安水费 {client_code} 累计水费"
+        self._attr_icon = "mdi:cash-multiple"
+        self._attr_device_info = build_device_info(client_code)
+        if client_code:
+            self.entity_id = f"sensor.xian_water_{client_code}_total_cost"
+
+    @property
+    def available(self):
+        """Return if entity is available."""
+        return self.coordinator.data is not None and bool(
+            self.coordinator.data.get("dayList")
+        )
+
+    @property
+    def native_value(self):
+        """Return lifetime cumulative water cost in CNY."""
+        if not self.coordinator.data:
+            return 0
+        return round(
+            sum(
+                float(day.get("dayEleCost", 0) or 0)
+                for day in self.coordinator.data.get("dayList", [])
+            ),
+            2,
+        )
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return state attributes."""
+        data = self.coordinator.data or {}
+        current_year = str(datetime.now().year)
+        current_year_cost = next(
+            (
+                item.get("yearEleCost", 0)
+                for item in data.get("yearList", [])
+                if item.get("year") == current_year
+            ),
+            0,
+        )
+        return {
+            "当年水费": round(float(current_year_cost or 0), 2),
+            "累计用水": round(
+                sum(
+                    float(day.get("dayEleNum", 0) or 0)
+                    for day in data.get("dayList", [])
+                ),
+                2,
+            ),
+            "数据源": "西安水务",
+            "最后同步日期": self.coordinator.last_update_time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
 
     async def async_added_to_hass(self):
         """When entity is added to hass."""

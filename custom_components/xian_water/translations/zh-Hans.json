@@ -3,16 +3,17 @@
     "step": {
       "user": {
         "title": "西安水务",
-        "description": "设置西安水务集成",
+        "description": "设置西安水务集成。\n\nAPI 无法访问时（例如 502、超时），集成会先自动改用本地 JSON：`xian_water_<客户编号>_<CID>_cache.json` 或 `xian_water_<客户编号>.json`。若本地也没有可用 JSON，可勾选下面的「离线添加（跳过 API 校验）」直接完成添加。",
         "data": {
           "client_code": "客户编号",
           "client_type": "客户类型",
-          "cid": "CID"
+          "cid": "CID",
+          "skip_api_check": "离线添加（跳过 API 校验）"
         }
       }
     },
     "error": {
-      "cannot_connect": "连接失败",
+      "cannot_connect": "连接失败：API 不可访问，且未找到可用的本地 JSON。可勾选「离线添加（跳过 API 校验）」后重新提交。",
       "invalid_auth": "认证无效",
       "unknown": "未知错误"
     },

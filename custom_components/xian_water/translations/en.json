@@ -3,16 +3,17 @@
     "step": {
       "user": {
         "title": "Xi'an Water",
-        "description": "Set up Xi'an Water integration",
+        "description": "Set up Xi'an Water integration.\n\nIf the API is unreachable (e.g. HTTP 502 or a timeout), the integration automatically falls back to a local JSON file: `xian_water_<client_code>_<cid>_cache.json` or `xian_water_<client_code>.json`. When no usable local JSON exists either, tick \"Offline add (skip API check)\" below to add the integration anyway.",
         "data": {
           "client_code": "Client Code",
           "client_type": "Client Type",
-          "cid": "CID"
+          "cid": "CID",
+          "skip_api_check": "Offline add (skip API check)"
         }
       }
     },
     "error": {
-      "cannot_connect": "Failed to connect",
+      "cannot_connect": "Failed to connect: the API is unreachable and no usable local JSON was found. Tick \"Offline add (skip API check)\" and submit again.",
       "invalid_auth": "Invalid authentication",
       "unknown": "Unexpected error"
     },
