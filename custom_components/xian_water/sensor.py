@@ -31,7 +31,10 @@ from .const import (
     TIER_PRICE_3,
     RECHARGE_RECORDS,
 )
-from .statistics import async_import_water_statistics
+from .statistics import (
+    async_import_water_cost_statistics,
+    async_import_water_statistics,
+)
 from .storage import XianWaterStorage
 
 _LOGGER = logging.getLogger(__name__)
@@ -206,6 +209,17 @@ class XianWaterCoordinator(DataUpdateCoordinator):
                 )
             except Exception as ex:  # pylint: disable=broad-except
                 _LOGGER.warning("导入用水长期统计失败: %s", ex)
+
+            # 回填「水费」统计，供能源面板「成本跟踪 → 统计」显示历史成本曲线
+            try:
+                await async_import_water_cost_statistics(
+                    self.hass,
+                    self._storage,
+                    self.config.get("client_code", "default"),
+                    self._calibration_signature(summary),
+                )
+            except Exception as ex:  # pylint: disable=broad-except
+                _LOGGER.warning("导入水费长期统计失败: %s", ex)
 
             return self.data
 
